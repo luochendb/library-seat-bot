@@ -1,0 +1,50 @@
+name: 图书馆座位预约
+
+on:
+  schedule:
+    - cron: '29 13 * * *'
+  workflow_dispatch:
+    inputs:
+      day:
+        description: '预约日期（YYYY-MM-DD，留空则默认明天）'
+        required: false
+        default: ''
+      mode:
+        description: '运行模式'
+        required: false
+        type: choice
+        options: ['now', 'debug']
+        default: 'now'
+
+jobs:
+  reserve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 执行预约
+        env:
+          USERNAME: ${{ secrets.USERNAME }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+        run: |
+          ARGS="-m now"
+          if [ -n "${{ github.event.inputs.day }}" ]; then
+            ARGS="$ARGS -d ${{ github.event.inputs.day }}"
+          fi
+          if [ "${{ github.event.inputs.mode }}" = "debug" ]; then
+            ARGS="-m debug"
+          fi
+          python main.py $ARGS
