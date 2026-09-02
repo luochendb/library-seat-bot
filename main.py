@@ -40,6 +40,8 @@ RESERVE_DAYS_AHEAD = 1   # 预约几天后的座位（1=明天）
 class SeatReserver:
     """座位预约器"""
 
+    TIMEOUT = 30  # 所有请求超时（秒），防止国外服务器访问国内网站挂死
+
     def __init__(self, dept_id_enc: str):
         self.dept_id_enc = dept_id_enc
         self.login_page = "https://passport2.chaoxing.com/mlogin?loginType=1&newversion=true&fid="
@@ -62,7 +64,7 @@ class SeatReserver:
     def login(self, username: str, password: str) -> bool:
         """用户名密码登录（AES 加密）"""
         # 先访问登录页获取 cookie
-        self.session.get(url=self.login_page, verify=False)
+        self.session.get(url=self.login_page, verify=False, timeout=self.TIMEOUT)
 
         # 加密用户名密码
         enc_username = aes_encrypt(username)
@@ -81,7 +83,7 @@ class SeatReserver:
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Host": "passport2.chaoxing.com"
         })
-        resp = self.session.post(url=self.login_url, params=parm, verify=False)
+        resp = self.session.post(url=self.login_url, params=parm, verify=False, timeout=self.TIMEOUT)
         obj = resp.json()
         if obj.get("status"):
             print(f"  [登录成功] {username}")
@@ -107,13 +109,24 @@ class SeatReserver:
             print(f"  [Cookie 加载失败] {e}")
             return False
 
-    def get_submit_enc(self, room_id: int, day: str) -> str:
-        """访问选座页面，提取 submit_enc 值"""
+    def get_submit_enc(self, room_id: int, day: str, retries: int = 3) -> str:
+        """访问选座页面，提取 submit_enc 值（带重试）"""
         url = self.select_url.format(room_id=room_id, day=day)
-        resp = self.session.get(url, verify=False)
-        if resp.status_code != 200:
-            return ""
-        return extract_submit_enc(resp.text)
+        for attempt in range(retries):
+            try:
+                resp = self.session.get(url, verify=False, timeout=self.TIMEOUT)
+                if resp.status_code == 200:
+                    enc = extract_submit_enc(resp.text)
+                    if enc:
+                        return enc
+                    # 调试：页面没有 submit_enc 时输出页面信息
+                    if attempt == retries - 1:
+                        print(f"    [debug] 选座页长度={len(resp.text)}, "
+                              f"前200字: {resp.text[:200]}")
+            except Exception as e:
+                print(f"    [选座页请求异常] {e}，重试 ({attempt+1}/{retries})")
+            time.sleep(1)
+        return ""
 
     def get_captcha(self) -> str:
         """获取验证码图片并用 ddddocr 识别
@@ -122,7 +135,7 @@ class SeatReserver:
             识别出的验证码字符串，失败返回空字符串
         """
         try:
-            resp = self.session.get(self.captcha_url, verify=False)
+            resp = self.session.get(self.captcha_url, verify=False, timeout=self.TIMEOUT)
             data = resp.json()
             if not data.get("success"):
                 return ""
@@ -197,7 +210,7 @@ class SeatReserver:
                 "wyToken": "",
                 "enc": enc
             }
-            resp = self.session.post(self.submit_url, params=parm, verify=False)
+            resp = self.session.post(self.submit_url, params=parm, verify=False, timeout=self.TIMEOUT)
             try:
                 result = resp.json()
             except Exception:
