@@ -1,0 +1,17 @@
+# Cookie / 登录态
+config/storage_state.json
+config/*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 日志
+*.log
+
+# 系统
+.DS_Store
+Thumbs.db
