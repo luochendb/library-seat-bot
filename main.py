@@ -216,6 +216,29 @@ class SeatReserver:
 
         return {"success": False, "msg": "验证码重试次数耗尽"}
 
+    def find_any_seat(self, room_id: int, day: str, start_time: str,
+                       end_time: str, max_seat: int = 800,
+                       use_captcha: bool = True) -> str:
+        """ brute-force 查找当前房间任意可用座位
+
+        Returns:
+            座位号字符串（如 "036"），找不到返回空字符串
+        """
+        print("    随机查找可用座位...")
+        for seat_num in range(1, max_seat + 1):
+            seat_str = str(seat_num).zfill(3)
+            result = self.reserve(
+                room_id=room_id, day=day,
+                start_time=start_time, end_time=end_time,
+                seat_num=seat_str, use_captcha=use_captcha
+            )
+            if result["success"]:
+                print(f"    找到可用座位: {seat_str}")
+                return seat_str
+            # 座位被约/不可用就继续，不打印每个失败
+            time.sleep(0.05)
+        return ""
+
 
 def get_target_day() -> str:
     """获取目标日期（明天）"""
@@ -263,8 +286,9 @@ def run_reserve(config: dict, username: str = None, password: str = None,
     dept_id_enc = config.get("deptIdEnc", "")
     rooms = config.get("rooms", [])
     seats = config.get("seats", [])
-    time_slots = config.get("timeSlots", [])
-    use_captcha = config.get("useCaptcha", True)  # 默认开启验证码识别
+    # 三段式全天预约：按优先级排列，第一个为必选段（失败换下一个座位），其余为可选段（失败跳过）
+    segments = config.get("segments", config.get("timeSlots", []))
+    use_captcha = config.get("useCaptcha", True)
 
     if day is None:
         day = get_target_day()
@@ -272,7 +296,7 @@ def run_reserve(config: dict, username: str = None, password: str = None,
     print(f"目标日期: {day}")
     print(f"房间列表: {[r['name'] for r in rooms]}")
     print(f"座位列表: {seats}")
-    print(f"时段列表: {[(t['start'], t['end']) for t in time_slots]}")
+    print(f"时段列表: {[(s.get('name',''), s['start'], s['end']) for s in segments]}")
     print(f"验证码识别: {'开启' if use_captcha else '关闭'}")
 
     reserver = SeatReserver(dept_id_enc)
@@ -289,41 +313,92 @@ def run_reserve(config: dict, username: str = None, password: str = None,
         print("  错误：未提供登录信息（用户名密码或 cookie 文件）")
         return False
 
-    # 遍历房间 × 时段 × 座位
-    attempt = 0
+    if not segments:
+        print("  错误：配置中没有时段（segments）")
+        return False
+
+    # 三段式全天预约逻辑
+    # 第一个时段为必选段（下午），失败则换下一个座位
+    # 其余时段为可选段（晚上、早上），失败则跳过该时段
+    required_seg = segments[0]
+    optional_segs = segments[1:]
+
     for room in rooms:
-        for slot in time_slots:
-            for seat in seats:
-                attempt += 1
-                if attempt > MAX_ATTEMPT:
-                    print(f"\n达到最大尝试次数 {MAX_ATTEMPT}，停止")
-                    return False
+        print(f"\n{'='*50}")
+        print(f"房间: {room['name']} (id={room['id']})")
+        print(f"{'='*50}")
 
-                seat_str = str(seat).zfill(3)  # 补零到3位
-                print(f"\n[尝试 {attempt}] {room['name']} 座位{seat_str} "
-                      f"{slot['start']}-{slot['end']}")
+        # 第一轮：尝试备选座位
+        for seat in seats:
+            seat_str = str(seat).zfill(3)
+            print(f"\n[座位 {seat_str}]")
 
+            # 必选段（下午）——失败则换下一个座位
+            print(f"  必选段 [{required_seg.get('name','')}] "
+                  f"{required_seg['start']}-{required_seg['end']}")
+            result = reserver.reserve(
+                room_id=room["id"], day=day,
+                start_time=required_seg["start"], end_time=required_seg["end"],
+                seat_num=seat_str, use_captcha=use_captcha
+            )
+            print(f"    结果: {result['msg']}")
+            if not result["success"]:
+                print(f"    必选段失败，换下一个座位")
+                continue
+
+            booked = [required_seg.get("name", required_seg["start"])]
+
+            # 可选段（晚上、早上）——失败跳过
+            for seg in optional_segs:
+                print(f"  可选段 [{seg.get('name','')}] {seg['start']}-{seg['end']}")
                 result = reserver.reserve(
-                    room_id=room["id"],
-                    day=day,
-                    start_time=slot["start"],
-                    end_time=slot["end"],
-                    seat_num=seat_str,
-                    use_captcha=use_captcha
+                    room_id=room["id"], day=day,
+                    start_time=seg["start"], end_time=seg["end"],
+                    seat_num=seat_str, use_captcha=use_captcha
                 )
-
-                print(f"  结果: {result['msg']}")
-
+                print(f"    结果: {result['msg']}")
                 if result["success"]:
-                    print(f"\n{'='*50}")
-                    print(f"预约成功！{room['name']} 座位{seat_str} "
-                          f"{day} {slot['start']}-{slot['end']}")
-                    print(f"{'='*50}")
-                    return True
-
+                    booked.append(seg.get("name", seg["start"]))
+                else:
+                    print(f"    跳过该时段")
                 time.sleep(SLEEPTIME)
 
-    print(f"\n所有尝试均失败（共 {attempt} 次）")
+            print(f"\n{'='*50}")
+            print(f"预约完成！{room['name']} 座位{seat_str} {day}")
+            print(f"已约时段: {'、'.join(booked)}")
+            print(f"{'='*50}")
+            return True
+
+        # 第二轮：备选座位全部失败，随机找一个当前房间可用座位
+        print(f"\n[备选座位全部失败，随机查找可用座位]")
+        any_seat = reserver.find_any_seat(
+            room_id=room["id"], day=day,
+            start_time=required_seg["start"], end_time=required_seg["end"],
+            use_captcha=use_captcha
+        )
+        if any_seat:
+            booked = [required_seg.get("name", required_seg["start"])]
+            for seg in optional_segs:
+                print(f"  可选段 [{seg.get('name','')}] {seg['start']}-{seg['end']}")
+                result = reserver.reserve(
+                    room_id=room["id"], day=day,
+                    start_time=seg["start"], end_time=seg["end"],
+                    seat_num=any_seat, use_captcha=use_captcha
+                )
+                print(f"    结果: {result['msg']}")
+                if result["success"]:
+                    booked.append(seg.get("name", seg["start"]))
+                time.sleep(SLEEPTIME)
+
+            print(f"\n{'='*50}")
+            print(f"预约完成（随机座位）！{room['name']} 座位{any_seat} {day}")
+            print(f"已约时段: {'、'.join(booked)}")
+            print(f"{'='*50}")
+            return True
+
+        print(f"  房间 {room['name']} 无可用座位，尝试下一个房间")
+
+    print(f"\n所有房间均无可用座位")
     return False
 
 
