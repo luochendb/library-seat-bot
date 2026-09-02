@@ -109,23 +109,26 @@ class SeatReserver:
             print(f"  [Cookie 加载失败] {e}")
             return False
 
-    def get_submit_enc(self, room_id: int, day: str, retries: int = 3) -> str:
+    def get_submit_enc(self, room_id: int, day: str, retries: int = 3,
+                        verbose: bool = True) -> str:
         """访问选座页面，提取 submit_enc 值（带重试）"""
         url = self.select_url.format(room_id=room_id, day=day)
+        last_text = ""
         for attempt in range(retries):
             try:
                 resp = self.session.get(url, verify=False, timeout=self.TIMEOUT)
                 if resp.status_code == 200:
+                    last_text = resp.text
                     enc = extract_submit_enc(resp.text)
                     if enc:
                         return enc
-                    # 调试：页面没有 submit_enc 时输出页面信息
-                    if attempt == retries - 1:
-                        print(f"    [debug] 选座页长度={len(resp.text)}, "
-                              f"前200字: {resp.text[:200]}")
             except Exception as e:
                 print(f"    [选座页请求异常] {e}，重试 ({attempt+1}/{retries})")
             time.sleep(1)
+        # 所有重试失败，输出诊断信息（只打印一次）
+        if verbose and last_text:
+            print(f"    [debug] 选座页长度={len(last_text)}")
+            print(f"    [debug] 页面内容前800字: {last_text[:800]}")
         return ""
 
     def get_captcha(self) -> str:
@@ -230,14 +233,23 @@ class SeatReserver:
         return {"success": False, "msg": "验证码重试次数耗尽"}
 
     def find_any_seat(self, room_id: int, day: str, start_time: str,
-                       end_time: str, max_seat: int = 800,
+                       end_time: str, max_seat: int = 20,
                        use_captcha: bool = True) -> str:
         """ brute-force 查找当前房间任意可用座位
+
+        先检测选座页是否可访问（submit_enc 是否存在），不可访问直接跳过。
+        最多尝试 max_seat 个座位，避免国外服务器网络慢时跑超时。
 
         Returns:
             座位号字符串（如 "036"），找不到返回空字符串
         """
         print("    随机查找可用座位...")
+        # 先检测选座页是否可访问
+        test_enc = self.get_submit_enc(room_id, day, retries=2, verbose=True)
+        if not test_enc:
+            print("    选座页不可访问（无 submit_enc），跳过随机查找")
+            return ""
+
         for seat_num in range(1, max_seat + 1):
             seat_str = str(seat_num).zfill(3)
             result = self.reserve(
@@ -248,8 +260,8 @@ class SeatReserver:
             if result["success"]:
                 print(f"    找到可用座位: {seat_str}")
                 return seat_str
-            # 座位被约/不可用就继续，不打印每个失败
             time.sleep(0.05)
+        print(f"    随机查找 {max_seat} 个座位均失败")
         return ""
 
 
